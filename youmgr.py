@@ -190,12 +190,16 @@ class SavedVideosFrame(wx.Frame):
             dlg = wx.MessageDialog(self, 'Cannot clear database!')
             dlg.ShowModal()
         for p in self.resultsPanel.GetChildren():
-            try:
-                cu.execute('insert into data values ("' + p.link + '","' + p.title + '","' +\
-                            p.duration + '","' + p.description + '",' + str(p.image.GetWidth()) +\
-                            ',' + str(p.image.GetHeight()) + ',?)', [buffer(p.image.GetData())])
+            #try:
+            if True:
+                cu.execute('insert into data values (\'' + p.link + '\',?,\'' +\
+                            p.duration + '\',?,' + str(p.image.GetWidth()) +\
+                            ',' + str(p.image.GetHeight()) + ',?)',\
+                            (p.title, p.description, buffer(p.image.GetData()))\
+                          )
                 co.commit()
-            except:
+            #except:
+            else:
                 dlg = wx.MessageDialog(self, 'Cannot save video:\n' + p.title + '\nto the database!', 'Alert!')
                 dlg.ShowModal()
         cu.close()
@@ -211,7 +215,7 @@ class SavedVideosFrame(wx.Frame):
         cu.close()
         co.close()
         for d in data:
-            pan = VideoPanel(self.resultsPanel, wx.ImageFromBuffer(d[4], d[5], d[6]), d[1], d[2], d[3])
+            pan = VideoPanel(self.resultsPanel, wx.ImageFromBuffer(d[4], d[5], d[6]), unicode(d[1]), d[2], unicode(d[3]))
             pan.link = d[0]
             self.AddPanel(pan)
 
