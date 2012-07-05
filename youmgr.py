@@ -190,16 +190,14 @@ class SavedVideosFrame(wx.Frame):
             dlg = wx.MessageDialog(self, 'Cannot clear database!')
             dlg.ShowModal()
         for p in self.resultsPanel.GetChildren():
-            #try:
-            if True:
+            try:
                 cu.execute('insert into data values (\'' + p.link + '\',?,\'' +\
                             p.duration + '\',?,' + str(p.image.GetWidth()) +\
                             ',' + str(p.image.GetHeight()) + ',?)',\
                             (p.title, p.description, buffer(p.image.GetData()))\
                           )
                 co.commit()
-            #except:
-            else:
+            except:
                 dlg = wx.MessageDialog(self, 'Cannot save video:\n' + p.title + '\nto the database!', 'Alert!')
                 dlg.ShowModal()
         cu.close()
