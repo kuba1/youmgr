@@ -1,4 +1,4 @@
-#!/usr/bin/python2.7
+#!/usr/bin/python2
 
 #import clewn.vim as vim; vim.pdb()
 import wx
@@ -8,8 +8,10 @@ import string
 import sqlite3
 from lxml import etree
 from multiprocessing import Process, Queue
+from threading import Thread
 import time
 import sys
+from subprocess import PIPE, STDOUT, Popen
 
 class Parser:
     def __init__(self):
@@ -22,7 +24,12 @@ class Parser:
         tree = etree.XML(data)
         for e in tree:
             if e.tag[-5:] == 'entry':
+                author = None
                 for d in e:
+                    if d.tag[-6:] == 'author':
+                        for g in d:
+                            if g.tag[-4:] == 'name':
+                                author = g.text
                     if d.tag[-5:] == 'group':
                         title = None
                         durat = None
@@ -37,7 +44,7 @@ class Parser:
                                 vidid = g.text
                             elif g.tag[-11:] == 'description':
                                 descr = g.text
-                        self.videos.append((title, durat, vidid, descr))
+                        self.videos.append((title, durat, vidid, descr, author))
                         continue
                 continue
 
@@ -55,12 +62,15 @@ class ProxyDialog(wx.Dialog):
     def __init__(self, parent):
         wx.Dialog.__init__(self, parent, title='Proxy settings', size=(300, 170))
 
-        co = sqlite3.connect('ymdata.db')
+        co = sqlite3.connect(homePath + '/ymdata.db')
         cu = co.cursor()
         cu.execute('select * from proxy where selected==1')
         selected = cu.fetchall()
         cu.close()
         co.close()
+
+        self.proxyURL = selected[0][2]
+        self.proxyPort = selected[0][3]
 
         sizer = wx.BoxSizer(wx.VERTICAL)
         self.proxyText = wx.TextCtrl(self) 
@@ -74,17 +84,20 @@ class ProxyDialog(wx.Dialog):
         sizer.Add(self.portText, 1, wx.ALL | wx.EXPAND, 5)
         sizer.Add(self.okButton, 0, wx.ALL, 5)
 
-        self.proxyText.SetValue(selected[0][2])
-        self.portText.SetValue(selected[0][3])
+        self.proxyText.SetValue(self.proxyURL)
+        self.portText.SetValue(self.proxyPort)
         self.SetSizer(sizer)
         self.Layout()
 
     def OnOk(self, e):
-        co = sqlite3.connect('ymdata.db')
+        self.proxyURL = self.proxyText.GetValue()
+        self.proxyPort = self.portText.GetValue()
+        
+        co = sqlite3.connect(homePath + '/ymdata.db')
         cu = co.cursor()
         try:
-            cu.execute('update proxy set addr="' + self.proxyText.GetValue() + '", port="' +\
-                    self.portText.GetValue() + '" where selected==1')
+            cu.execute('update proxy set addr="' + self.proxyURL + '", port="' +\
+                    self.proxyPort + '" where selected==1')
             co.commit()
         except:
             dlg = wx.MessageDialog(self, 'Cannot save proxy settings!', 'Alert!')
@@ -95,16 +108,17 @@ class ProxyDialog(wx.Dialog):
         self.Close()
 
     def GetProxy(self):
-        return self.proxyText.GetValue() + ':' + self.portText.GetValue()
+        return self.proxyURL + ':' + self.proxyPort
 
 class VideoPanel(wx.Panel):
-    def __init__(self, parent, image, title, duration, description):
+    def __init__(self, parent, image, title, duration, description, author):
         wx.Panel.__init__(self, parent, style=wx.SIMPLE_BORDER)
 
         self.image = image
         self.title = title
         self.duration = duration
         self.description = description
+        self.author = author
 
         if image:
             self.bitmap = wx.BitmapFromImage(image)
@@ -127,7 +141,7 @@ class VideoPanel(wx.Panel):
             font.SetWeight(wx.FONTWEIGHT_NORMAL)
             dc.SetFont(font)
         if self.duration:
-            dc.DrawText(self.duration, self.iw+10, 30)
+            dc.DrawText(self.duration + ' ' + self.author, self.iw+10, 30)
         if self.description:
             dc.DrawText(self.description, self.iw+10, 50)
         if self.bitmap:
@@ -135,7 +149,7 @@ class VideoPanel(wx.Panel):
         e.Skip()
 
     def Clone(self, parent):
-        return VideoPanel(parent, self.image.Copy(), self.title, self.duration, self.description)
+        return VideoPanel(parent, self.image.Copy(), self.title, self.duration, self.description, self.author)
        
 class VlcSettingsDialog(wx.Dialog):
     def __init__(self, parent):
@@ -181,40 +195,36 @@ class SavedVideosFrame(wx.Frame):
         self.Layout()
 
     def SaveToDb(self):
-        co = sqlite3.connect('movies.db')
+        co = sqlite3.connect(homePath + '/movies.db')
         cu = co.cursor()
+
+        cu.execute('delete from data')
+        for p in self.resultsPanel.GetChildren():
+            cu.execute('insert into data values (?,\'' + p.link + '\',?,\'' +\
+                        p.duration + '\',?,' + str(p.image.GetWidth()) +\
+                        ',' + str(p.image.GetHeight()) + ',?)',\
+                        (p.author, p.title, p.description, buffer(p.image.GetData()))\
+                      )
         try:
-            cu.execute('delete from data')
             co.commit()
         except:
-            dlg = wx.MessageDialog(self, 'Cannot clear database!')
+            dlg = wx.MessageDialog(self, 'Error occured while modyfing database!')
             dlg.ShowModal()
-        for p in self.resultsPanel.GetChildren():
-            try:
-                cu.execute('insert into data values (\'' + p.link + '\',?,\'' +\
-                            p.duration + '\',?,' + str(p.image.GetWidth()) +\
-                            ',' + str(p.image.GetHeight()) + ',?)',\
-                            (p.title, p.description, buffer(p.image.GetData()))\
-                          )
-                co.commit()
-            except:
-                dlg = wx.MessageDialog(self, 'Cannot save video:\n' + p.title + '\nto the database!', 'Alert!')
-                dlg.ShowModal()
         cu.close()
         co.close()
         self.Close()
-        pass
 
     def ReadFromDb(self):
-        co = sqlite3.connect('movies.db')
+        co = sqlite3.connect(homePath + '/movies.db')
         cu = co.cursor()
         cu.execute('select * from data')
         data = cu.fetchall()
         cu.close()
         co.close()
         for d in data:
-            pan = VideoPanel(self.resultsPanel, wx.ImageFromBuffer(d[4], d[5], d[6]), unicode(d[1]), d[2], unicode(d[3]))
-            pan.link = d[0]
+            pan = VideoPanel(self.resultsPanel, wx.ImageFromBuffer(d[5], d[6], d[7]),\
+                    unicode(d[2]), d[3], unicode(d[4]), unicode(d[0]))
+            pan.link = d[1]
             self.AddPanel(pan)
 
     def OnContextMenu(self, e):
@@ -241,7 +251,12 @@ class MainFrame(wx.Frame):
         self.gui = False
         self.fulscreen = False
         self.newsearch = False
-        
+
+        self.played = []
+        self.playerTimer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.OnPlayerTimer, self.playerTimer)
+        self.playerTimer.Start(250)
+
         self.bgSizer = wx.BoxSizer(wx.VERTICAL)
         self.mainSizer = wx.BoxSizer(wx.HORIZONTAL)
         self.optSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -310,7 +325,7 @@ class MainFrame(wx.Frame):
         self.proxyDlg = ProxyDialog(self)
         self.vlcDlg = VlcSettingsDialog(self)
         self.mplDlg = MplSettingsDialog(self)
-        
+
         self.searchTxt.Bind(wx.EVT_KEY_DOWN, self.OnSearchKeyDown)
 
         #library window
@@ -341,16 +356,14 @@ class MainFrame(wx.Frame):
             except:
                 return
             if len(data) == 1:
-                if data[0] == 'end':
-                    print('Timer: End')
-                elif data[0] == 'failed':
-                    print('Timer: Failed')
+                if data[0] == 'End':
+                    self.statusStrip.SetStatusText('Search has been finished, ' + str(self.index + 9) + ' results.')
+                elif data[0] == 'Failed':
+                    self.statusStrip.SetStatusText('Search attempt has failed!')
                 self.retrieveTimer.Stop()
                 self.retrieveTimer.Destroy()
                 self.retrieveQueue.close()
 
-                #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                # hmm?:
                 self.retrieveProcess = None
                 self.retrieveQueue = None
                 self.retrieveTimer = None
@@ -361,6 +374,20 @@ class MainFrame(wx.Frame):
                 else:
                     self.CreateButton(data[0], None) 
         
+    def OnPlayerTimer(self, e):
+        for q in self.played:
+            while True:
+                try:
+                    l = q.get_nowait()
+                    l.rstrip()
+                    print(l)
+                    self.statusStrip.SetStatusText(l)
+                    if l == 'End':
+                        self.played.remove(q)
+                        break
+                except:
+                    break
+            
     def OnChannel(self, e):
         if self.cchannel:
             self.cchannel = False
@@ -419,7 +446,6 @@ class MainFrame(wx.Frame):
         else:
             self.index = self.index + 10
 
-        print(self.index)
         self.oldText = text
         text = self.PrepareQuery(text)
 
@@ -431,6 +457,8 @@ class MainFrame(wx.Frame):
                     '&max-results=10&v=2&prettyprint=true'
                 
         self.proxyName = self.proxyDlg.GetProxy()
+
+        print(self.proxyName)
         
         self.retrieveTimer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.OnTimer, self.retrieveTimer)
@@ -443,7 +471,7 @@ class MainFrame(wx.Frame):
         title = data[0]
         time = self.StoHMS(data[1])
         link = 'http://www.youtube.com/watch?v=' + data[2]
-        pan = VideoPanel(self.resultsPanel, image, title, time, data[3])
+        pan = VideoPanel(self.resultsPanel, image, title, time, data[3], data[4])
         pan.Bind(wx.EVT_LEFT_DOWN, self.OnPlay)
         pan.Bind(wx.EVT_RIGHT_DOWN, self.OnContextMenu)
         pan.link = link
@@ -469,45 +497,65 @@ class MainFrame(wx.Frame):
         self.libraryWnd.CloneAndAddPanel(pan)
 
     def OnDownload(self, e, pan):
-        os.system('youtube-dl ' + pan.link + ' &')
-
-    def OnPlay(self, e):
-        link = '$(youtube-dl --get-url ' +  e.GetEventObject().link + ')'
-
         proxy = self.proxyDlg.GetProxy() 
         if proxy != ':':
             os.environ["http_proxy"] = self.proxyName
             os.environ["ftp_proxy"] = self.proxyName
+        os.system('youtube-dl ' + pan.link + ' &')
+
+    def OnPlay(self, e):
+        link = e.GetEventObject().link
+
+        player = []
+
+        self.proxyName = self.proxyDlg.GetProxy() 
+        proxy = self.proxyName
+        print(proxy)
+        print(self.proxyName)
+
+        if proxy == ':':
+            os.system('unset http_proxy')
+            os.system('unset ftp_proxy')
+        else:
+            os.environ["http_proxy"] = self.proxyName
+            os.environ["ftp_proxy"] = self.proxyName
 
         if self.gui:
-            player = 'vlc'
+            player.append('vlc')
 
             if self.fulscreen:
-                player = player + ' -f'
+                player.append('-f')
 
             if proxy != ':':
                 proxy = '--http-proxy=' + proxy + ' '
             else:
                 proxy = ''
 
-            print(player + ' ' + proxy + link + ' &')
-            os.system(player + ' ' + proxy + link + ' &')
+            #print(player + ' ' + proxy + link + ' &')
+            #self.played.append(os.popen4(player + ' ' + proxy + link + ' &')[1])
+            #print('nie blokuje')
         else:
-            player = 'mplayer'
+            player.append('mplayer')
 
             if self.fulscreen:
-                player = player + ' -fs'
+                player.append('-fs')
 
-            player = player + ' -cache 10000'
+            player.append('-cache 10000')
+            player.append('-volume 50')
+            player.append('-msglevel all=9')
 
             proxy = self.proxyDlg.GetProxy() 
             if proxy != ':':
-                proxy = 'http_proxy://' + proxy + '/'
+                player.append('http_proxy://' + proxy + '/')
             else:
-                proxy = ''
+                player.append(':')
 
-            print(player + ' -volume 50 ' + proxy + link + ' &')
-            os.system(player + ' -volume 50 ' + proxy + link + ' &')
+            player.append(link)
+
+            q = Queue()
+            self.played.append(q)
+            t = Thread(target=Play, args=(player, q))
+            t.start()
 
     def PrepareQuery(self, text):
         wasWhite = True
@@ -528,7 +576,6 @@ class MainFrame(wx.Frame):
     def OnProxy(self, e):
         self.proxyDlg.ShowModal()
         self.proxyName = self.proxyDlg.GetProxy()
-        pass
 
     def OnExit(self, e):
         self.Quit()
@@ -537,12 +584,47 @@ class MainFrame(wx.Frame):
         self.libraryWnd.SaveToDb()
         exit()
 
+def Play(cmd, q):
+    p = Popen(['youtube-dl', '--get-url', cmd[-1]], stdout=PIPE, stderr=STDOUT, bufsize=1)
+    url = ''
+    q.put('Retrieving video URL...')
+    while True:
+        d = p.stdout.read()
+        if d == '':
+            break
+        else:
+            url = url + d
+
+    url = url.rstrip()
+
+    if len(url.split('\n')) == 1:
+        q.put('Video URL has been successfully obtained!')
+
+        player = []
+        for a in cmd[:1]:
+            player.append(a)
+
+        if cmd[-2] != ':':
+            player.append(cmd[-2] + url)
+        else:
+            player.append(url)
+
+        p = Popen(player, stdout=PIPE, stdin=PIPE, stderr=STDOUT, bufsize=1024)
+        while True:
+            l = p.stdout.readline()
+            q.put(l)
+            if l == '':
+                break
+        q.put('End')
+    else:
+        q.put('Could not retrieve an URL for the video!')
+
 def Retrieve(proxy, queue, url):
     data = None
     try:
         data = FetchURL(proxy, url).read()
     except: 
-        queue.put(['failed'])
+        queue.put(['Fail'])
         return
 
     p = Parser()
@@ -552,8 +634,7 @@ def Retrieve(proxy, queue, url):
     for d in data:
         image = RetrieveImageData(proxy, d)
         queue.put([d, image])
-    queue.put(['end'])
-    queue.close()
+    queue.put(['End'])
 
 def RetrieveImageData(proxy, data):
     thumb = 'http://i.ytimg.com/vi/' + data[2] + '/default.jpg'
@@ -570,6 +651,8 @@ def FetchURL(proxy, url):
         return urllib2.urlopen(url)
 
 app = wx.App(False)
+app.SetAppName('youmgr')
+homePath = wx.StandardPaths.Get().GetUserDataDir()
 wnd = MainFrame()
 wnd.Show(True)
 wnd.Maximize()
