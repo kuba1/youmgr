@@ -499,8 +499,8 @@ class MainFrame(wx.Frame):
     def OnDownload(self, e, pan):
         proxy = self.proxyDlg.GetProxy() 
         if proxy != ':':
-            os.environ["http_proxy"] = self.proxyName
-            os.environ["ftp_proxy"] = self.proxyName
+            os.environ['http_proxy'] = self.proxyName
+            os.environ['ftp_proxy'] = self.proxyName
         os.system('youtube-dl ' + pan.link + ' &')
 
     def OnPlay(self, e):
@@ -514,11 +514,15 @@ class MainFrame(wx.Frame):
         print(self.proxyName)
 
         if proxy == ':':
-            os.system('unset http_proxy')
-            os.system('unset ftp_proxy')
+            try:
+                os.unsetenv['http_proxy']
+                os.unsetenv['ftp_proxy']
+                print('unsetenv ok')
+            except:
+                print('unsetenv failed')
         else:
-            os.environ["http_proxy"] = self.proxyName
-            os.environ["ftp_proxy"] = self.proxyName
+            os.environ['http_proxy'] = self.proxyName
+            os.environ['ftp_proxy'] = self.proxyName
 
         if self.gui:
             player.append('vlc')
@@ -555,6 +559,7 @@ class MainFrame(wx.Frame):
             q = Queue()
             self.played.append(q)
             t = Thread(target=Play, args=(player, q))
+            t.daemon = True
             t.start()
 
     def PrepareQuery(self, text):
@@ -581,7 +586,7 @@ class MainFrame(wx.Frame):
         self.Quit()
 
     def Quit(self):
-        self.libraryWnd.SaveToDb()
+        #self.libraryWnd.SaveToDb()
         exit()
 
 def Play(cmd, q):
@@ -609,12 +614,17 @@ def Play(cmd, q):
         else:
             player.append(url)
 
-        p = Popen(player, stdout=PIPE, stdin=PIPE, stderr=STDOUT, bufsize=1024)
+        p = Popen(player, stdout=PIPE, stdin=PIPE, stderr=STDOUT, bufsize=0)#1024)
+        readLine = True
+        last = ''
         while True:
-            l = p.stdout.readline()
-            q.put(l)
-            if l == '':
+            if p.poll() is not None:
                 break
+            lines = str(p.stdout.read(128)).replace('\r', '\n').split('\n')
+            lines[0] = last + lines[0]
+            last = lines.pop()
+            for l in lines:
+                q.put(l)
         q.put('End')
     else:
         q.put('Could not retrieve an URL for the video!')
