@@ -255,7 +255,7 @@ class MainFrame(wx.Frame):
         self.played = []
         self.playerTimer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.OnPlayerTimer, self.playerTimer)
-        self.playerTimer.Start(250)
+        self.playerTimer.Start(500)
 
         self.bgSizer = wx.BoxSizer(wx.VERTICAL)
         self.mainSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -379,14 +379,14 @@ class MainFrame(wx.Frame):
             while True:
                 try:
                     l = q.get_nowait()
-                    l.rstrip()
-                    print(l)
-                    self.statusStrip.SetStatusText(l)
                     if l == 'End':
                         self.played.remove(q)
                         break
                 except:
                     break
+            if l:
+                l.rstrip()
+                self.statusStrip.SetStatusText(l)
             
     def OnChannel(self, e):
         if self.cchannel:
