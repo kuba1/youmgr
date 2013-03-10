@@ -268,8 +268,15 @@ class MainFrame(wx.Frame):
         self.fscBox = wx.CheckBox(self, label='fulscreen')
         self.Bind(wx.EVT_CHECKBOX, self.OnFulscreenChange, self.fscBox)
 
+        self.qualityBox = wx.ComboBox(self)
+        self.qualityBox.Append('MP4 270p-360p', '18')
+        self.qualityBox.Append('MP4 720p', '22')
+        self.qualityBox.Append('MP4 1080p', '37')
+        self.qualityBox.SetSelection(2)
+
         self.optSizer.Add(self.vlcBox, 0, wx.ALL, 5)
         self.optSizer.Add(self.fscBox, 0, wx.ALL, 5)
+        self.optSizer.Add(self.qualityBox, 0, wx.ALL, 5)
 
         #main sizer
         self.searchTxt = wx.TextCtrl(self)
@@ -376,9 +383,11 @@ class MainFrame(wx.Frame):
         
     def OnPlayerTimer(self, e):
         for q in self.played:
+            l = None
             while True:
                 try:
                     l = q.get_nowait()
+                    #TODO: ehh I should fix this as well
                     if l == 'End':
                         self.played.remove(q)
                         break
@@ -386,6 +395,7 @@ class MainFrame(wx.Frame):
                     break
             if l:
                 l.rstrip()
+                print(l)
                 self.statusStrip.SetStatusText(l)
             
     def OnChannel(self, e):
@@ -554,6 +564,9 @@ class MainFrame(wx.Frame):
             else:
                 player.append(':')
 
+            quality = self.qualityBox.GetClientData(self.qualityBox.GetSelection())
+
+            player.append(quality)
             player.append(link)
 
             q = Queue()
@@ -586,15 +599,15 @@ class MainFrame(wx.Frame):
         self.Quit()
 
     def Quit(self):
-        #self.libraryWnd.SaveToDb()
+        self.libraryWnd.SaveToDb()
         exit()
 
 def Play(cmd, q):
-    p = Popen(['youtube-dl', '--get-url', cmd[-1]], stdout=PIPE, stderr=STDOUT, bufsize=1)
+    p = Popen(['youtube-dl','--format', cmd[-2], '--get-url', cmd[-1]], stdout=PIPE, stderr=STDOUT, bufsize=1)
     url = ''
     q.put('Retrieving video URL...')
     while True:
-        d = p.stdout.read()
+        d = p.stdout.read(512)
         if d == '':
             break
         else:
@@ -609,8 +622,8 @@ def Play(cmd, q):
         for a in cmd[:1]:
             player.append(a)
 
-        if cmd[-2] != ':':
-            player.append(cmd[-2] + url)
+        if cmd[-3] != ':':
+            player.append(cmd[-3] + url)
         else:
             player.append(url)
 
