@@ -268,11 +268,15 @@ class MainFrame(wx.Frame):
         self.fscBox = wx.CheckBox(self, label='fulscreen')
         self.Bind(wx.EVT_CHECKBOX, self.OnFulscreenChange, self.fscBox)
 
-        self.qualityBox = wx.ComboBox(self)
+        self.qualityBox = wx.ComboBox(self, style=wx.CB_READONLY | wx.CB_DROPDOWN)
         self.qualityBox.Append('MP4 270p-360p', '18')
         self.qualityBox.Append('MP4 720p', '22')
         self.qualityBox.Append('MP4 1080p', '37')
-        self.qualityBox.SetSelection(2)
+        self.qualityBox.Append('WebM 360p', '43')
+        self.qualityBox.Append('WebM 480p', '44')
+        self.qualityBox.Append('WebM 720p', '45')
+        self.qualityBox.Append('WebM 1080p', '46')
+        self.qualityBox.SetSelection(6)
 
         self.optSizer.Add(self.vlcBox, 0, wx.ALL, 5)
         self.optSizer.Add(self.fscBox, 0, wx.ALL, 5)
@@ -554,7 +558,7 @@ class MainFrame(wx.Frame):
             if self.fulscreen:
                 player.append('-fs')
 
-            player.append('-cache 10000')
+            player.append('-cache 50000')
             player.append('-volume 50')
             player.append('-msglevel all=9')
 
