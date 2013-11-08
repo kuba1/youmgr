@@ -5,543 +5,466 @@ import wx
 import urllib2
 import os
 import string
-import sqlite3
+from sqlite3 import connect
+from contextlib import closing
 from lxml import etree
 from multiprocessing import Process, Queue
+from subprocess import PIPE, STDOUT, Popen
 from threading import Thread
 import time
 import sys
-from subprocess import PIPE, STDOUT, Popen
 
 class Parser:
+    ''' xml parser to parse video query result '''
     def __init__(self):
-        self.reset()
+        self.__reset()
 
-    def reset(self):
-        self.videos = []
+    def get_data(self):
+        ''' get videos list retrieved from parsed document '''
+        return self.__videos
 
     def parse(self, data):
-        tree = etree.XML(data)
-        for e in tree:
-            if e.tag[-5:] == 'entry':
-                author = None
-                for d in e:
-                    if d.tag[-6:] == 'author':
-                        for g in d:
-                            if g.tag[-4:] == 'name':
-                                author = g.text
-                    if d.tag[-5:] == 'group':
-                        title = None
-                        durat = None
-                        vidid = None
-                        descr = None
-                        for g in d:
-                            if g.tag[-5:] == 'title':
-                                title = g.text
-                            elif g.tag[-8:] == 'duration':
-                                durat = g.attrib['seconds']
-                            elif g.tag[-7:] == 'videoid':
-                                vidid = g.text
-                            elif g.tag[-11:] == 'description':
-                                descr = g.text
-                        self.videos.append((title, durat, vidid, descr, author))
-                        continue
-                continue
+        ''' parse received data '''
+        document = etree.XML(data)
 
-    def GetData(self):
-        return self.videos
+        # look for entry elements, there may be more
+        # then one
+        for element in document:
+            if 'entry' in element.tag:
+                self.__parse_video_entry(element);
 
-class LinkButton(wx.Button):
-    def SetLink(self, link):
-        self.link = link
+    def __parse_video_entry(self, entry):
+        ''' parse video xml element '''
+        author = None
 
-    def GetLink(self):
-        return self.link
+        # get interesting data from entry
+        for data in entry:
+            if 'author' in data.tag:
+                for field in data:
+                    # get author name
+                    if 'name' in field.tag:
+                        author_name = field.text
+            if 'group' in data.tag:
+                video_title = None
+                video_duration = None
+                video_id = None
+                video_description = None
+
+                for field in data:
+                    # get video title
+                    if 'title' in field.tag:
+                        video_title = field.text
+                    # get video duration
+                    elif 'duration' in field.tag:
+                        video_duration = field.attrib['seconds']
+                    # get video id
+                    elif 'videoid' in field.tag:
+                        video_id = field.text
+                    # get video description
+                    elif 'description' in field.tag:
+                        video_description = field.text
+                self.__videos.append((video_title,
+                                      video_duration,
+                                      video_id,
+                                      video_description,
+                                      author_name))
+
+    def __reset(self):
+        self.__videos = []
 
 class ProxyDialog(wx.Dialog):
+    ''' dialog window used to enter and edit proxy data '''
     def __init__(self, parent):
         wx.Dialog.__init__(self, parent, title='Proxy settings', size=(300, 170))
 
-        co = sqlite3.connect(homePath + '/ymdata.db')
-        cu = co.cursor()
-        cu.execute('select * from proxy where selected==1')
-        selected = cu.fetchall()
-        cu.close()
-        co.close()
+        self.__home_path = wx.StandardPaths.Get().GetUserDataDir()
+        selected_proxy = None
 
-        self.proxyURL = selected[0][2]
-        self.proxyPort = selected[0][3]
+        # get proxy data
+        with closing(connect(self.__home_path + '/ymdata.db')) as connection:
+            cursor = connection.cursor()
+            cursor.execute('SELECT * FROM proxy WHERE selected = 1')
+            selected_proxy = cursor.fetchone()
 
+        # save proxy data for later use
+        if selected_proxy:
+            self.__proxy_url = selected_proxy[2]
+            self.__proxy_port = selected_proxy[3]
+
+        # set up the gui
         sizer = wx.BoxSizer(wx.VERTICAL)
-        self.proxyText = wx.TextCtrl(self) 
-        self.portText = wx.TextCtrl(self)
-        self.okButton = wx.Button(self, label='OK')
-        self.Bind(wx.EVT_BUTTON, self.OnOk, self.okButton)
+        self.__url_text_control = wx.TextCtrl(self) 
+        self.__port_text_control = wx.TextCtrl(self)
+        self.__ok_button = wx.Button(self, label='OK')
+        self.Bind(wx.EVT_BUTTON, self.__on_ok, self.__ok_button)
 
         sizer.Add(wx.StaticText(self, label='Proxy address:'), 0, wx.ALL, 5)
-        sizer.Add(self.proxyText, 1, wx.ALL | wx.EXPAND, 5)
+        sizer.Add(self.__url_text_control, 1, wx.ALL | wx.EXPAND, 5)
         sizer.Add(wx.StaticText(self, label='Proxy port:'), 0, wx.ALL, 5)
-        sizer.Add(self.portText, 1, wx.ALL | wx.EXPAND, 5)
-        sizer.Add(self.okButton, 0, wx.ALL, 5)
+        sizer.Add(self.__port_text_control, 1, wx.ALL | wx.EXPAND, 5)
+        sizer.Add(self.__ok_button, 0, wx.ALL, 5)
 
-        self.proxyText.SetValue(self.proxyURL)
-        self.portText.SetValue(self.proxyPort)
+        # fill window with selected proxy data
+        self.__url_text_control.SetValue(self.__proxy_url)
+        self.__port_text_control.SetValue(self.__proxy_port)
         self.SetSizer(sizer)
         self.Layout()
 
-    def OnOk(self, e):
-        self.proxyURL = self.proxyText.GetValue()
-        self.proxyPort = self.portText.GetValue()
+    def get_proxy(self):
+        ''' get proxy data as string '''
+        return self.__proxy_url + ':' + self.__proxy_port
+
+    def __on_ok(self, e):
+        ''' ok button has been hit '''
+        # get proxy data
+        self.__proxy_url = self.__url_text_control.GetValue()
+        self.__proxy_port = self.__port_text_control.GetValue()
         
-        co = sqlite3.connect(homePath + '/ymdata.db')
-        cu = co.cursor()
-        try:
-            cu.execute('update proxy set addr="' + self.proxyURL + '", port="' +\
-                    self.proxyPort + '" where selected==1')
-            co.commit()
-        except:
-            dlg = wx.MessageDialog(self, 'Cannot save proxy settings!', 'Alert!')
-            dlg.ShowModal()
-        finally:
-            cu.close()
-            co.close()
+        with closing(connect(self.__home_path + '/ymdata.db')) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute('UPDATE proxy SET addr="' + self.__proxy_url +\
+                        '", port="' + self.__proxy_port + '" WHERE selected==1')
+                connection.commit()
+            except:
+                dlg = wx.MessageDialog(self, 'Cannot save proxy settings!', 'Alert!')
+                dlg.ShowModal()
+
         self.Close()
 
-    def GetProxy(self):
-        return self.proxyURL + ':' + self.proxyPort
-
 class VideoPanel(wx.Panel):
+    ''' panel with video data displayed in the video view/library '''
     def __init__(self, parent, image, title, duration, description, author):
         wx.Panel.__init__(self, parent, style=wx.SIMPLE_BORDER)
 
-        self.image = image
-        self.title = title
-        self.duration = duration
-        self.description = description
-        self.author = author
+        self.__home_path = wx.StandardPaths.Get().GetUserDataDir()
 
-        if image:
-            self.bitmap = wx.BitmapFromImage(image)
-            self.iw = image.GetSize()[0]
-            self.SetSize(image.GetSize())
+        # save the video data
+        self.__image = image
+        self.__title = title
+        self.__duration = duration
+        self.__description = description
+        self.__author = author
+        self.__link = None
+
+        if self.__image:
+            # create bitmap from image - only bitmap can be drawn
+            self.__bitmap = wx.BitmapFromImage(self.__image)
+            self.__image_width = image.GetSize()[0]
+            self.SetSize(self.__image.GetSize())
         else:
-            self.bitmap = None
-            self.iw = 0
-        self.Bind(wx.EVT_PAINT, self.OnPaint)
+            # no image
+            self.__bitmap = None
+            self.__image_width = 0
+        self.Bind(wx.EVT_PAINT, self.__on_paint)
 
         self.SetCursor(wx.StockCursor(wx.CURSOR_HAND))
 
-    def OnPaint(self, e):
+    def clone(self, parent):
+        ''' clone this video panel and return the copy '''
+        new_panel = VideoPanel(parent,
+                               self.__image.Copy(),
+                               self.__title,
+                               self.__duration,
+                               self.__description,
+                               self.__author)
+        new_panel.set_link(self.__link)
+        return new_panel
+
+    def set_link(self, link):
+        ''' link setter '''
+        self.__link = link
+
+    def get_link(self):
+        ''' link getter '''
+        return self.__link
+
+    def save_to_db(self):
+        ''' save this video to database '''
+        with closing(connect(self.__home_path + '/movies.db')) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute('INSERT INTO data VALUES (?,?,?,?,?,?,?,?) ',
+                               self.__get_data_tuple())
+                connection.commit()
+            except:
+                dlg = wx.MessageDialog(self,
+                                       'Error occured while saving videos!')
+                dlg.ShowModal()
+
+    def remove_from_db(self):
+        ''' remove this video from database '''
+        with closing(connect(self.__home_path + '/movies.db')) as connection:
+            cursor = connection.cursor()
+            try:
+                cursor.execute('DELETE FROM data WHERE author = ? AND\n'
+                               'link = ? AND title = ? AND duration = ? AND\n'
+                               'description = ? AND width = ? AND height = ?',
+                               # we dont need image data for this
+                               self.__get_data_tuple()[:-1])
+                connection.commit()
+            except:
+                dlg = wx.MessageDialog(self,
+                                       'Error occured while saving videos!')
+                dlg.ShowModal()
+       
+    def __get_data_tuple(self):
+        ''' get all the video data as tuple '''
+        return (self.__author, self.__link, self.__title, self.__duration,
+                self.__description, str(self.__image.GetWidth()),
+                str(self.__image.GetHeight()), buffer(self.__image.GetData()))
+
+    def __on_paint(self, e):
+        ''' draw the panel '''
         dc = wx.PaintDC(self)
-        if self.title:
+        if self.__title:
             font = dc.GetFont()
             font.SetWeight(wx.FONTWEIGHT_BOLD)
             dc.SetFont(font)
-            dc.DrawText(self.title, self.iw+10, 10)
+            dc.DrawText(self.__title, self.__image_width + 10, 10)
             font.SetWeight(wx.FONTWEIGHT_NORMAL)
             dc.SetFont(font)
-        if self.duration:
-            dc.DrawText(self.duration + ' ' + self.author, self.iw+10, 30)
-        if self.description:
-            dc.DrawText(self.description, self.iw+10, 50)
-        if self.bitmap:
-            dc.DrawBitmap(self.bitmap, 0, 0)
+        if self.__duration:
+            dc.DrawText(self.__duration + ' ' + self.__author,
+                        self.__image_width + 10,
+                        30)
+        if self.__description:
+            dc.DrawText(self.__description, self.__image_width + 10, 50)
+        if self.__bitmap:
+            dc.DrawBitmap(self.__bitmap, 0, 0)
         e.Skip()
 
-    def Clone(self, parent):
-        return VideoPanel(parent, self.image.Copy(), self.title, self.duration, self.description, self.author)
-       
 class VlcSettingsDialog(wx.Dialog):
+    ''' dialog with settings for vlc player '''
     def __init__(self, parent):
         wx.Dialog.__init__(self, parent, title='Vlc settings')
 
 class MplSettingsDialog(wx.Dialog):
+    ''' dialog with settings for mpv player '''
     def __init__(self, parent):
         wx.Dialog.__init__(self, parent, title='Mplayer settings')
 
 class SavedVideosFrame(wx.Frame):
+    ''' video library frame '''
     def __init__(self, parent):
         wx.Frame.__init__(self, parent, title='YouMgr video library')
 
-        self.parent = parent
-        self.bgSizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.__home_path = wx.StandardPaths.Get().GetUserDataDir()
+        self.__parent = parent
+        self.__background_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self.resultsPanel = wx.ScrolledWindow(self)
-        self.resultsPanel.SetScrollbars(20,20,50,50)
-        self.resultsSizer = wx.BoxSizer(wx.VERTICAL)
-        self.resultsPanel.SetSizer(self.resultsSizer)
+        self.__results_panel = wx.ScrolledWindow(self)
+        self.__results_panel.SetScrollbars(20,20,50,50)
+        self.__results_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.__results_panel.SetSizer(self.__results_sizer)
 
-        self.bgSizer.Add(self.resultsPanel, 1, wx.ALL | wx.EXPAND)
+        self.__background_sizer.Add(self.__results_panel, 1, wx.ALL | wx.EXPAND)
 
-        self.SetSizer(self.bgSizer)
+        self.SetSizer(self.__background_sizer)
+        self.read_videos_from_db()
 
-        self.ReadFromDb()
+    def clone_and_add_panel(self, panel):
+        ''' clone this panel and add to the videos list '''
+        new_panel = panel.clone(self.__results_panel)
+        new_panel.save_to_db()
+        self.add_panel(new_panel)
 
-    def CloneAndAddPanel(self, pan):
-        npan = pan.Clone(self.resultsPanel)
-        npan.link = pan.link
-        self.AddPanel(npan)
-
-    def AddPanel(self, pan):
-        pan.Bind(wx.EVT_LEFT_DOWN, self.parent.OnPlay)
-        pan.Bind(wx.EVT_RIGHT_DOWN, self.OnContextMenu)
-        self.resultsSizer.Add(pan, 1, wx.TOP | wx.EXPAND, 1)
+    def add_panel(self, panel):
+        ''' add panel to the videos list '''
+        # attach event handlers for click and context menu
+        panel.Bind(wx.EVT_LEFT_DOWN, self.__parent.on_play)
+        panel.Bind(wx.EVT_RIGHT_DOWN, self.__on_context_menu)
+        self.__results_sizer.Add(panel, 1, wx.TOP | wx.EXPAND, 1)
         self.Layout()
 
-    def OnDelete(self, e, pan):
-        pan.Hide()
-        self.resultsSizer.Detach(pan)
-        self.resultsPanel.RemoveChild(pan)
+    def read_videos_from_db(self):
+        ''' read all the videos from database and add them to library window '''
+        videos_data = None
+        with closing(connect(self.__home_path + '/movies.db')) as connection:
+            cursor = connection.cursor()
+            cursor.execute('SELECT * FROM data')
+            videos_data = cursor.fetchall()
+
+        # no videos exist in the databse
+        if not videos_data:
+            return
+
+        # fill the panel with video panels
+        for video_data in videos_data:
+            panel = VideoPanel(self.__results_panel,
+                               wx.ImageFromBuffer(video_data[5],
+                                                  video_data[6],
+                                                  video_data[7]),
+                               unicode(video_data[2]),
+                               video_data[3],
+                               unicode(video_data[4]),
+                               unicode(video_data[0]))
+            panel.set_link(video_data[1])
+            self.add_panel(panel)
+
+    def __on_delete(self, e, panel):
+        ''' delete panel from the videos list '''
+        # do it gracefully, first hide
+        panel.Hide()
+        # detach from the list
+        self.__results_sizer.Detach(panel)
+        # remove child from the panel
+        self.__results_panel.RemoveChild(panel)
+        # remove from db
+        panel.remove_from_db()
         self.Layout()
 
-    def SaveToDb(self):
-        co = sqlite3.connect(homePath + '/movies.db')
-        cu = co.cursor()
-
-        cu.execute('delete from data')
-        for p in self.resultsPanel.GetChildren():
-            cu.execute('insert into data values (?,\'' + p.link + '\',?,\'' +\
-                        p.duration + '\',?,' + str(p.image.GetWidth()) +\
-                        ',' + str(p.image.GetHeight()) + ',?)',\
-                        (p.author, p.title, p.description, buffer(p.image.GetData()))\
-                      )
-        try:
-            co.commit()
-        except:
-            dlg = wx.MessageDialog(self, 'Error occured while modyfing database!')
-            dlg.ShowModal()
-        cu.close()
-        co.close()
-        self.Close()
-
-    def ReadFromDb(self):
-        co = sqlite3.connect(homePath + '/movies.db')
-        cu = co.cursor()
-        cu.execute('select * from data')
-        data = cu.fetchall()
-        cu.close()
-        co.close()
-        for d in data:
-            pan = VideoPanel(self.resultsPanel, wx.ImageFromBuffer(d[5], d[6], d[7]),\
-                    unicode(d[2]), d[3], unicode(d[4]), unicode(d[0]))
-            pan.link = d[1]
-            self.AddPanel(pan)
-
-    def OnContextMenu(self, e):
-        pan = e.GetEventObject()
-        menu = wx.Menu()
-        deleteit = wx.MenuItem(menu, wx.ID_ANY, 'Delete')
-        self.Bind(wx.EVT_MENU, lambda e: self.OnDelete(e, pan), deleteit)
-        menu.AppendItem(deleteit)
-        pan.PopupMenu(menu, e.GetPosition())
+    def __on_context_menu(self, e):
+        panel = e.GetEventObject()
+        context_menu = wx.Menu()
+        delete_menu_item = wx.MenuItem(context_menu, wx.ID_ANY, 'Delete')
+        self.Bind(wx.EVT_MENU, lambda e: self.__on_delete(e, panel),
+                  delete_menu_item)
+        context_menu.AppendItem(delete_menu_item)
+        panel.PopupMenu(context_menu, e.GetPosition())
 
 class MainFrame(wx.Frame):
+    ''' main application window '''
     def __init__(self):
         wx.Frame.__init__(self, None, title='YouMgr', size=(500,500))
 
-        self.retrieveProcess = None
-        self.retrieveQueue = None
-        self.retrieveTimer = None
+        self.__retrieve_process = None
+        self.__retrieve_queue = None
+        self.__retrieve_timer = None
 
-        self.buttons = []
-        self.proxyName = ':'
-        self.oldText = ''
-        self.index = 1
-        self.cchannel = False
-        self.gui = False
-        self.fulscreen = False
-        self.newsearch = False
+        self.__buttons = []
+        self.__proxy_name = ':'
+        self.__old_text = ''
+        self.__index = 1
+        self.__search_for_channel = False
+        self.__gui = False
+        self.__fulscreen = False
+        self.__newsearch = False
 
-        self.played = []
-        self.playerTimer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.OnPlayerTimer, self.playerTimer)
-        self.playerTimer.Start(500)
+        self.__played = []
+        self.__player_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.__on_player_timer, self.__player_timer)
+        self.__player_timer.Start(500)
 
-        self.bgSizer = wx.BoxSizer(wx.VERTICAL)
-        self.mainSizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.optSizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.__background_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.__main_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.__opt_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         #opt sizer
-        self.vlcBox = wx.CheckBox(self, label='vlc')
-        self.Bind(wx.EVT_CHECKBOX, self.OnGuiChange, self.vlcBox)
+        self.__vlc_checkbox = wx.CheckBox(self, label='vlc')
+        self.Bind(wx.EVT_CHECKBOX, self.__on_gui_change, self.__vlc_checkbox)
 
-        self.fscBox = wx.CheckBox(self, label='fulscreen')
-        self.Bind(wx.EVT_CHECKBOX, self.OnFulscreenChange, self.fscBox)
+        self.__fulscreen_checkbox = wx.CheckBox(self, label='fulscreen')
+        self.Bind(wx.EVT_CHECKBOX,
+                  self.__on_fulscreen_change,
+                  self.__fulscreen_checkbox)
 
-        self.qualityBox = wx.ComboBox(self, style=wx.CB_READONLY | wx.CB_DROPDOWN)
-        self.qualityBox.Append('MP4 270p-360p', '18')
-        self.qualityBox.Append('MP4 720p', '22')
-        self.qualityBox.Append('MP4 1080p', '37')
-        self.qualityBox.Append('WebM 360p', '43')
-        self.qualityBox.Append('WebM 480p', '44')
-        self.qualityBox.Append('WebM 720p', '45')
-        self.qualityBox.Append('WebM 1080p', '46')
-        self.qualityBox.SetSelection(6)
+        # video quality combo box
+        self.__quality_combo_box =\
+                wx.ComboBox(self, style=wx.CB_READONLY | wx.CB_DROPDOWN)
+        self.__quality_combo_box.Append('Default', '0')
+        self.__quality_combo_box.Append('MP4 270p-360p', '18')
+        self.__quality_combo_box.Append('MP4 720p', '22')
+        self.__quality_combo_box.Append('MP4 1080p', '37')
+        self.__quality_combo_box.Append('WebM 360p', '43')
+        self.__quality_combo_box.Append('WebM 480p', '44')
+        self.__quality_combo_box.Append('WebM 720p', '45')
+        self.__quality_combo_box.Append('WebM 1080p', '46')
+        self.__quality_combo_box.SetSelection(0)
 
-        self.optSizer.Add(self.vlcBox, 0, wx.ALL, 5)
-        self.optSizer.Add(self.fscBox, 0, wx.ALL, 5)
-        self.optSizer.Add(self.qualityBox, 0, wx.ALL, 5)
+        self.__opt_sizer.Add(self.__vlc_checkbox, 0, wx.ALL, 5)
+        self.__opt_sizer.Add(self.__fulscreen_checkbox, 0, wx.ALL, 5)
+        self.__opt_sizer.Add(self.__quality_combo_box, 0, wx.ALL, 5)
 
         #main sizer
-        self.searchTxt = wx.TextCtrl(self)
+        self.__search_text = wx.TextCtrl(self)
 
-        self.searchBtn = wx.Button(self, label='New search')
-        self.Bind(wx.EVT_BUTTON, self.OnSearch, self.searchBtn)
+        self.__search_button = wx.Button(self, label='New search')
+        self.Bind(wx.EVT_BUTTON, self.__on_search, self.__search_button)
 
-        self.channelBx = wx.CheckBox(self, label='channel')
-        self.Bind(wx.EVT_CHECKBOX, self.OnChannel, self.channelBx)
+        self.__channel_checkbox = wx.CheckBox(self, label='channel')
+        self.Bind(wx.EVT_CHECKBOX, self.__on_channel, self.__channel_checkbox)
 
-        self.resultsPanel = wx.ScrolledWindow(self)
-        self.resultsPanel.SetScrollbars(20,20,50,50)
-        self.resultsSizer = wx.BoxSizer(wx.VERTICAL)
-        self.resultsPanel.SetSizer(self.resultsSizer)
+        self.__results_panel = wx.ScrolledWindow(self)
+        self.__results_panel.SetScrollbars(20,20,50,50)
+        self.__results_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.__results_panel.SetSizer(self.__results_sizer)
 
-        self.mainSizer.Add(self.searchTxt, 1, wx.ALL | wx.EXPAND, 5)
-        self.mainSizer.Add(self.channelBx, 0, wx.ALL, 5)
-        self.mainSizer.Add(self.searchBtn, 0, wx.ALL, 5)
+        self.__main_sizer.Add(self.__search_text, 1, wx.ALL | wx.EXPAND, 5)
+        self.__main_sizer.Add(self.__channel_checkbox, 0, wx.ALL, 5)
+        self.__main_sizer.Add(self.__search_button, 0, wx.ALL, 5)
 
         #background sizer
-        self.bgSizer.Add(self.mainSizer, 0, wx.ALL | wx.EXPAND)
-        self.bgSizer.Add(self.optSizer, 0, wx.ALL | wx.EXPAND)
-        self.bgSizer.Add(self.resultsPanel, 1,  wx.ALL | wx.EXPAND, 5)
+        self.__background_sizer.Add(self.__main_sizer, 0, wx.ALL | wx.EXPAND)
+        self.__background_sizer.Add(self.__opt_sizer, 0, wx.ALL | wx.EXPAND)
+        self.__background_sizer.Add(self.__results_panel, 1,  wx.ALL | wx.EXPAND, 5)
 
         #menus
-        self.menuBar = wx.MenuBar()
+        self.__menu_bar = wx.MenuBar()
 
-        fileMenu = wx.Menu()
-        proxyMenu = wx.MenuItem(fileMenu, wx.ID_ANY, '&Proxy')
-        exitMenu = wx.MenuItem(fileMenu, wx.ID_EXIT, 'E&xit')
+        file_menu = wx.Menu()
+        proxy_menu = wx.MenuItem(file_menu, wx.ID_ANY, '&Proxy')
+        exit_menu = wx.MenuItem(file_menu, wx.ID_EXIT, 'E&xit')
 
-        playersMenu = wx.Menu()
-        vlcMenu = wx.MenuItem(playersMenu, wx.ID_ANY, 'Vlc')
-        mplMenu = wx.MenuItem(playersMenu, wx.ID_ANY, 'Mplayer')
+        players_menu = wx.Menu()
+        vlc_menu = wx.MenuItem(players_menu, wx.ID_ANY, 'Vlc')
+        mpl_menu = wx.MenuItem(players_menu, wx.ID_ANY, 'Mplayer')
 
-        fileMenu.AppendItem(proxyMenu)
-        fileMenu.AppendItem(exitMenu)
-        self.Bind(wx.EVT_MENU, self.OnProxy, proxyMenu)
-        self.Bind(wx.EVT_MENU, self.OnExit, exitMenu)
+        file_menu.AppendItem(proxy_menu)
+        file_menu.AppendItem(exit_menu)
+        self.Bind(wx.EVT_MENU, self.__on_proxy, proxy_menu)
+        self.Bind(wx.EVT_MENU, self.__on_exit, exit_menu)
 
-        playersMenu.AppendItem(vlcMenu)
-        playersMenu.AppendItem(mplMenu)
-        self.Bind(wx.EVT_MENU, self.OnVlcSettings, vlcMenu)
-        self.Bind(wx.EVT_MENU, self.OnMplSettings, mplMenu)
+        players_menu.AppendItem(vlc_menu)
+        players_menu.AppendItem(mpl_menu)
+        self.Bind(wx.EVT_MENU, self.__on_vlc_settings, vlc_menu)
+        self.Bind(wx.EVT_MENU, self.__on_mpl_settings, mpl_menu)
 
-        self.menuBar.Append(fileMenu, 'Options')
-        self.menuBar.Append(playersMenu, 'Players')
+        self.__menu_bar.Append(file_menu, 'Options')
+        self.__menu_bar.Append(players_menu, 'Players')
 
-        self.statusStrip = wx.StatusBar(self)
-        self.statusStrip.SetStatusText('Ready')
+        self.__status_strip = wx.StatusBar(self)
+        self.__status_strip.SetStatusText('Ready')
 
         #settings dialogs
-        self.proxyDlg = ProxyDialog(self)
-        self.vlcDlg = VlcSettingsDialog(self)
-        self.mplDlg = MplSettingsDialog(self)
+        self.__proxy_dialog = ProxyDialog(self)
+        self.__vlc_dialog = VlcSettingsDialog(self)
+        self.__mpl_dialog = MplSettingsDialog(self)
 
-        self.searchTxt.Bind(wx.EVT_KEY_DOWN, self.OnSearchKeyDown)
+        self.__search_text.Bind(wx.EVT_KEY_DOWN, self.__on_search_key_down)
 
         #library window
-        self.libraryWnd = SavedVideosFrame(self)
-        self.libraryWnd.Show(True)
+        self.__library_window = SavedVideosFrame(self)
+        self.__library_window.Show(True)
 
-        self.SetSizer(self.bgSizer)
-        self.SetMenuBar(self.menuBar)
-        self.SetStatusBar(self.statusStrip)
+        self.SetSizer(self.__background_sizer)
+        self.SetMenuBar(self.__menu_bar)
+        self.SetStatusBar(self.__status_strip)
         self.Layout()
 
-    def OnVlcSettings(self, e):
-        self.vlcDlg.ShowModal()
-
-    def OnMplSettings(self, e):
-        self.mplDlg.ShowModal()
-
-    def OnGuiChange(self, e):
-        self.gui = not self.gui
-
-    def OnFulscreenChange(self, e):
-        self.fulscreen = not self.fulscreen
-
-    def OnTimer(self, e):
-        while True:
-            try:
-                data = self.retrieveQueue.get_nowait()
-            except:
-                return
-            if len(data) == 1:
-                if data[0] == 'End':
-                    self.statusStrip.SetStatusText('Search has been finished, ' + str(self.index + 9) + ' results.')
-                elif data[0] == 'Failed':
-                    self.statusStrip.SetStatusText('Search attempt has failed!')
-                self.retrieveTimer.Stop()
-                self.retrieveTimer.Destroy()
-                self.retrieveQueue.close()
-
-                self.retrieveProcess = None
-                self.retrieveQueue = None
-                self.retrieveTimer = None
-            elif len(data) == 2:
-                if data[1] != None:
-                    image = wx.ImageFromData(data[1][0], data[1][1], data[1][2])
-                    self.CreateButton(data[0], image)
-                else:
-                    self.CreateButton(data[0], None) 
-        
-    def OnPlayerTimer(self, e):
-        for q in self.played:
-            l = None
-            while True:
-                try:
-                    l = q.get_nowait()
-                    #TODO: ehh I should fix this as well
-                    if l == 'End':
-                        self.played.remove(q)
-                        break
-                except:
-                    break
-            if l:
-                l.rstrip()
-                print(l)
-                self.statusStrip.SetStatusText(l)
-            
-    def OnChannel(self, e):
-        if self.cchannel:
-            self.cchannel = False
-        else:
-            self.cchannel = True
-
-    def OnSearchKeyDown(self, e):
-        key = e.GetKeyCode()
-        if key == wx.WXK_RETURN:
-            self.Search()
-        else:
-            e.Skip()
-
-    def OnKeyDown(self, e):
-        key = e.GetKeyCode()
-        if key == wx.WXK_RETURN:
-            print('enter')
-        elif key == 'Q' or key == 'q':
-            if e.ControlDown():
-                self.Quit()
-        else:
-            e.Skip()
-
-    def OnSearch(self, e):
-        self.newsearch = True
-        self.Search()
-
-    def StoHMS(self, s):
-        s = int(s)
-        h = s / 3600
-        s = s - h * 3600
-        m = s / 60
-        s = s - m * 60
-        sh = str(h)
-        if len(sh) < 2:
-            sh = '0' + sh
-        sm = str(m)
-        if len(sm) < 2:
-            sm = '0' + sm
-        ss = str(s)
-        if len(ss) < 2:
-            ss = '0' + ss
-        return sh + ':' + sm + ':' + ss
-
-    def Search(self):
-        if self.retrieveProcess != None:
-            return
-
-        text = self.searchTxt.GetValue()
-        self.statusStrip.SetStatusText('Searching for: ' + text + '...')
-        if text != self.oldText or self.cchannel or self.newsearch:
-            self.resultsSizer.Clear(True)
-            self.index = 1
-            self.cchannel = False
-            self.newsearch = False
-        else:
-            self.index = self.index + 10
-
-        self.oldText = text
-        text = self.PrepareQuery(text)
-
-        if self.channelBx.GetValue():
-            query = 'http://gdata.youtube.com/feeds/api/users/' + text + '/uploads?start-index=' + str(self.index) +\
-                    '&max-results=10&v=2&prettyprint=true'
-        else:
-            query = 'http://gdata.youtube.com/feeds/api/videos?q=' + text + '&start-index=' + str(self.index) +\
-                    '&max-results=10&v=2&prettyprint=true'
-                
-        self.proxyName = self.proxyDlg.GetProxy()
-
-        print(self.proxyName)
-        
-        self.retrieveTimer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.OnTimer, self.retrieveTimer)
-        self.retrieveQueue = Queue()
-        self.retrieveProcess = Process(target=Retrieve, args=(self.proxyName, self.retrieveQueue, query))
-        self.retrieveProcess.start()
-        self.retrieveTimer.Start(50)
-    
-    def CreateButton(self, data, image):
-        title = data[0]
-        time = self.StoHMS(data[1])
-        link = 'http://www.youtube.com/watch?v=' + data[2]
-        pan = VideoPanel(self.resultsPanel, image, title, time, data[3], data[4])
-        pan.Bind(wx.EVT_LEFT_DOWN, self.OnPlay)
-        pan.Bind(wx.EVT_RIGHT_DOWN, self.OnContextMenu)
-        pan.link = link
-
-        self.resultsSizer.Add(pan, 1, wx.TOP | wx.EXPAND, 1)
-        self.Layout()
-
-    def OnContextMenu(self, e):
-        pan = e.GetEventObject()
-        menu = wx.Menu()
-
-        save = wx.MenuItem(menu, wx.ID_ANY, 'Save')
-        self.Bind(wx.EVT_MENU, lambda e: self.OnSave(e, pan), save)
-
-        download = wx.MenuItem(menu, wx.ID_ANY, 'Download')
-        self.Bind(wx.EVT_MENU, lambda e: self.OnDownload(e, pan), download)
-
-        menu.AppendItem(save)
-        menu.AppendItem(download)
-        pan.PopupMenu(menu, e.GetPosition())
-
-    def OnSave(self, e, pan):
-        self.libraryWnd.CloneAndAddPanel(pan)
-
-    def OnDownload(self, e, pan):
-        proxy = self.proxyDlg.GetProxy() 
-        if proxy != ':':
-            os.environ['http_proxy'] = self.proxyName
-            os.environ['ftp_proxy'] = self.proxyName
-        os.system('youtube-dl ' + pan.link + ' &')
-
-    def OnPlay(self, e):
-        link = e.GetEventObject().link
+    def on_play(self, e):
+        ''' video has been clicked, play it '''
+        link = e.GetEventObject().get_link()
 
         player = []
 
-        self.proxyName = self.proxyDlg.GetProxy() 
-        proxy = self.proxyName
-        print(proxy)
-        print(self.proxyName)
+        self.__proxy_name = self.__proxy_dialog.get_proxy() 
+        proxy = self.__proxy_name
 
         if proxy == ':':
             try:
                 os.unsetenv['http_proxy']
                 os.unsetenv['ftp_proxy']
-                print('unsetenv ok')
             except:
-                print('unsetenv failed')
+                pass
         else:
-            os.environ['http_proxy'] = self.proxyName
-            os.environ['ftp_proxy'] = self.proxyName
+            os.environ['http_proxy'] = self.__proxy_name
+            os.environ['ftp_proxy'] = self.__proxy_name
 
-        if self.gui:
+        if self.__gui:
             player.append('vlc')
 
-            if self.fulscreen:
+            if self.__fulscreen:
                 player.append('-f')
 
             if proxy != ':':
@@ -553,125 +476,370 @@ class MainFrame(wx.Frame):
             #self.played.append(os.popen4(player + ' ' + proxy + link + ' &')[1])
             #print('nie blokuje')
         else:
-            player.append('mplayer')
+            #player.append('mplayer')
+            player.append('mpv')
 
-            if self.fulscreen:
-                player.append('-fs')
+            if self.__fulscreen:
+                player.append('--fs')
 
-            player.append('-cache 50000')
-            player.append('-volume 50')
-            player.append('-msglevel all=9')
+            player.append('--cache 50000')
+            player.append('--volume 50')
+            player.append('--msglevel all=9')
 
-            proxy = self.proxyDlg.GetProxy() 
+            proxy = self.__proxy_dialog.get_proxy() 
             if proxy != ':':
                 player.append('http_proxy://' + proxy + '/')
             else:
                 player.append(':')
 
-            quality = self.qualityBox.GetClientData(self.qualityBox.GetSelection())
+            quality_choice = self.__quality_combo_box.GetSelection()
+            quality = self.__quality_combo_box.GetClientData(quality_choice)
 
             player.append(quality)
             player.append(link)
 
-            q = Queue()
-            self.played.append(q)
-            t = Thread(target=Play, args=(player, q))
-            t.daemon = True
-            t.start()
+            queue = Queue()
+            self.__played.append(queue)
+            thread = Thread(target=play, args=(player, queue))
+            thread.daemon = True
+            thread.start()
 
-    def PrepareQuery(self, text):
-        wasWhite = True
-        newText = ''
-        for c in text:
-            if c == ' ':
-                if wasWhite:
+    def __on_vlc_settings(self, e):
+        ''' show vlc player settings window '''
+        self.__vlc_dialog.ShowModal()
+
+    def __on_mpl_settings(self, e):
+        ''' show mplayer/mpv settings window '''
+        self.__mpl_dialog.ShowModal()
+
+    def __on_gui_change(self, e):
+        ''' start player with gui or not '''
+        self.__gui = not self.__gui
+
+    def __on_fulscreen_change(self, e):
+        ''' start player on fullscreen or not '''
+        self.__fulscreen = not self.__fulscreen
+
+    def __on_timer(self, e):
+        '''
+        check if there are results, if there are, process them. This is
+        attached to a timer so, executed periodically when request has
+        been sent
+        '''
+        while True:
+            try:
+                # get data from queue without blocking (exception if there
+                # isn't any data available)
+                data = self.__retrieve_queue.get_nowait()
+            except:
+                return
+
+            # process data if there is something
+            if len(data) is 1:
+                # in this case it has to be a marking message
+                if data[0] == 'End':
+                    # end of data, everything has been received/processed
+                    self.__status_strip.SetStatusText(\
+                            'Search has been finished, ' +\
+                            str(self.__index + 9) + ' results.')
+                elif data[0] == 'Failed':
+                    # error has occured
+                    self.__status_strip.SetStatusText(\
+                            'Search attempt has failed!')
+
+                # clean up the queue and stop timer so this function
+                # is not called until it is started from searching function
+                self.__retrieve_timer.Stop()
+                self.__retrieve_timer.Destroy()
+                self.__retrieve_queue.close()
+
+                self.__retrieve_process = None
+                self.__retrieve_queue = None
+                self.__retrieve_timer = None
+
+            elif len(data) is 2:
+                # this means that there is data, let's process it...
+                if data[1]:
+                    # there is image data
+                    image = wx.ImageFromData(data[1][0], data[1][1], data[1][2])
+                    self.__create_video_panel_for_video(data[0], image)
+                else:
+                    # no image data
+                    self.__create_video_panel_for_video(data[0], None) 
+        
+    def __on_player_timer(self, e):
+        '''
+        this is timer function to process data from player (for instance
+        progress data)
+        '''
+        # do that for all currently played videos (there can be more than one
+        # this is a list of data queues
+        for playing_video_queue in self.__played:
+            data = None
+            while True:
+                try:
+                    data = playing_video_queue.get_nowait()
+                    #TODO: ehh I should fix this as well
+                    if data == 'End':
+                        # video has stopped, pop this queue from the list
+                        self.__played.remove(playing_video_queue)
+                        break
+                except:
+                    break
+            if data:
+                # remove unnecessary whitespaces and simply put this into the
+                # status strip
+                data.rstrip()
+                self.__status_strip.SetStatusText(data)
+            
+    def __on_channel(self, e):
+        ''' flip search for channel flag '''
+        self.__search_for_channel = not self.__search_for_channel
+
+    def __on_search_key_down(self, e):
+        '''
+        start searching if enter has been hit while in the searching bar
+        '''
+        key = e.GetKeyCode()
+        if key == wx.WXK_RETURN:
+            self.__search()
+        else:
+            e.Skip()
+
+    def __on_search(self, e):
+        '''
+        executed when search button has been clicked, in this case start
+        new search and discard all current results
+        '''
+        self.__newsearch = True
+        self.__search()
+
+    def __convert_seconds_to_hours_minutes_seconds(self, seconds):
+        ''' convert seconds into HH:MM:SS format '''
+        # just make sure...
+        seconds = int(seconds)
+        hours = seconds / 3600
+        seconds = seconds - hours * 3600
+        minutes = seconds / 60
+        seconds = seconds - minutes * 60
+
+        return str(hours).zfill(2) + ':' +\
+               str(minutes).zfill(2) + ':' +\
+               str(seconds).zfill(2)
+
+    def __search(self):
+        ''' search for videos as specified in the search text control '''
+        # if there is retrieving process running, ignore this event
+        # (don't search)
+        if self.__retrieve_process:
+            return
+
+        # get search text
+        text = self.__search_text.GetValue()
+        self.__status_strip.SetStatusText('Searching for: ' + text + '...')
+
+        # if it's different then in last search of we're searching for channel
+        # or new search has been forced
+        if text != self.__old_text or self.__search_for_channel or self.__newsearch:
+            self.__results_sizer.Clear(True)
+            self.__index = 1
+            self.__search_for_channel = False
+            self.__newsearch = False
+        else:
+            self.__index = self.__index + 10
+
+        self.__old_text = text
+        text = self.__prepare_query(text)
+
+        # prepare query strings
+        if self.__channel_checkbox.GetValue():
+            query = 'http://gdata.youtube.com/feeds/api/users/' + text +\
+                    '/uploads?start-index=' + str(self.__index) +\
+                    '&max-results=10&v=2&prettyprint=true'
+        else:
+            query = 'http://gdata.youtube.com/feeds/api/videos?q=' + text +\
+                    '&start-index=' + str(self.__index) +\
+                    '&max-results=10&v=2&prettyprint=true'
+                
+        self.__proxy_name = self.__proxy_dialog.get_proxy()
+
+        # set up new retrieval timer
+        self.__retrieve_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.__on_timer, self.__retrieve_timer)
+
+        # set up new queue for results processing and start new retrieval
+        # process and resume retrieval timer
+        self.__retrieve_queue = Queue()
+        self.__retrieve_process =\
+                Process(target=retrieve, args=(self.__proxy_name,
+                                               self.__retrieve_queue, query))
+        self.__retrieve_process.start()
+        self.__retrieve_timer.Start(50)
+    
+    def __create_video_panel_for_video(self, data, image):
+        ''' parse video data and create video panel '''
+        title = data[0]
+        time = self.__convert_seconds_to_hours_minutes_seconds(data[1])
+        link = 'http://www.youtube.com/watch?v=' + data[2]
+
+        # build the panel and set up all the connections
+        panel = VideoPanel(self.__results_panel, image, title, time, data[3], data[4])
+        panel.set_link(link)
+        panel.Bind(wx.EVT_LEFT_DOWN, self.on_play)
+        panel.Bind(wx.EVT_RIGHT_DOWN, self.__on_context_menu)
+
+        self.__results_sizer.Add(panel, 1, wx.TOP | wx.EXPAND, 1)
+        self.Layout()
+
+    def __on_context_menu(self, e):
+        ''' show video context menu '''
+        panel = e.GetEventObject()
+        menu = wx.Menu()
+
+        save = wx.MenuItem(menu, wx.ID_ANY, 'Save')
+        self.Bind(wx.EVT_MENU, lambda e: self.__on_save(e, panel), save)
+
+        download = wx.MenuItem(menu, wx.ID_ANY, 'Download')
+        self.Bind(wx.EVT_MENU, lambda e: self.__on_download(e, panel), download)
+
+        menu.AppendItem(save)
+        menu.AppendItem(download)
+        panel.PopupMenu(menu, e.GetPosition())
+
+    def __on_save(self, e, panel):
+        ''' save the video to the library (database)'''
+        self.__library_window.clone_and_add_panel(panel)
+
+    def __on_download(self, e, panel):
+        ''' download this video '''
+        # TODO: fix this...
+        proxy = self.__proxy_dialog.get_proxy() 
+        if proxy != ':':
+            os.environ['http_proxy'] = self.__proxy_name
+            os.environ['ftp_proxy'] = self.__proxy_name
+        os.system('youtube-dl ' + panel.link + ' &')
+
+    def __prepare_query(self, text):
+        ''' prepare query from text control to be inserted into url '''
+        was_white = True
+        new_text = ''
+        for character in text:
+            # space
+            if character == ' ':
+                if was_white:
+                    # if there was white before, process next character
+                    # we already have + inserted
                     continue
                 else:
-                    newText = newText + '+'
-                    wasWhite = True
+                    # insert + instead of space
+                    new_text = new_text + '+'
+                    was_white = True
             else:
-                newText = newText + c 
-                wasWhite = False
+                # if not white, just copy it
+                new_text = new_text + character 
+                was_white = False
 
-        return newText.strip('+')
+        # if there are any + on the edges, get rid of them, they are not
+        # necessary
+        return new_text.strip('+')
 
-    def OnProxy(self, e):
-        self.proxyDlg.ShowModal()
-        self.proxyName = self.proxyDlg.GetProxy()
+    def __on_proxy(self, e):
+        ''' show proxy settings dialog '''
+        self.__proxy_dialog.ShowModal()
+        self.__proxy_name = self.__proxy_dialog.get_proxy()
 
-    def OnExit(self, e):
-        self.Quit()
+    def __on_exit(self, e):
+        ''' exit event has been received '''
+        self.__quit()
 
-    def Quit(self):
-        self.libraryWnd.SaveToDb()
+    def __quit(self):
+        ''' exit the program '''
         exit()
 
-def Play(cmd, q):
-    p = Popen(['youtube-dl','--format', cmd[-2], '--get-url', cmd[-1]], stdout=PIPE, stderr=STDOUT, bufsize=1)
+def play(command, queue):
+    '''
+    open new process, with player and connect it to get data from the player
+    '''
+    if command[-2] == '0':
+        process = Popen(['youtube-dl','--get-url', command[-1]], stdout=PIPE,\
+                         stderr=STDOUT, bufsize=1)
+    else:
+        process = Popen(['youtube-dl','--format', command[-2], '--get-url',\
+                         command[-1]], stdout=PIPE, stderr=STDOUT, bufsize=1)
+
     url = ''
-    q.put('Retrieving video URL...')
+    queue.put('Retrieving video URL...')
+
     while True:
-        d = p.stdout.read(512)
-        if d == '':
+        data = process.stdout.read(512)
+        if data == '':
             break
         else:
-            url = url + d
+            url = url + data
 
     url = url.rstrip()
 
     if len(url.split('\n')) == 1:
-        q.put('Video URL has been successfully obtained!')
-
+        queue.put('Video URL has been successfully obtained!')
         player = []
-        for a in cmd[:1]:
+
+        for a in command[:1]:
             player.append(a)
 
-        if cmd[-3] != ':':
-            player.append(cmd[-3] + url)
+        if command[-3] != ':':
+            player.append(command[-3] + url)
         else:
             player.append(url)
 
-        p = Popen(player, stdout=PIPE, stdin=PIPE, stderr=STDOUT, bufsize=0)#1024)
+        process = Popen(player, stdout=PIPE, stdin=PIPE, stderr=STDOUT,\
+                        bufsize=0)
         readLine = True
         last = ''
+
         while True:
-            if p.poll() is not None:
+            if process.poll() is not None:
                 break
-            lines = str(p.stdout.read(128)).replace('\r', '\n').split('\n')
+            lines =\
+                str(process.stdout.read(128)).replace('\r', '\n').split('\n')
             lines[0] = last + lines[0]
             last = lines.pop()
             for l in lines:
-                q.put(l)
-        q.put('End')
-    else:
-        q.put('Could not retrieve an URL for the video!')
+                queue.put(l)
 
-def Retrieve(proxy, queue, url):
-    data = None
+        queue.put('End')
+    else:
+        queue.put('Could not retrieve an URL for the video!')
+
+def retrieve(proxy, queue, url):
+    ''' get data for given url, parse it and get image '''
+    parser = Parser()
+
     try:
-        data = FetchURL(proxy, url).read()
+        parser.parse(fetch_url(proxy, url).read())
     except: 
         queue.put(['Fail'])
         return
 
-    p = Parser()
-    p.parse(data)
-    data = p.GetData()
+    for data in parser.get_data():
+        image = retrieve_image_data(proxy, data)
+        queue.put([data, image])
 
-    for d in data:
-        image = RetrieveImageData(proxy, d)
-        queue.put([d, image])
     queue.put(['End'])
 
-def RetrieveImageData(proxy, data):
+def retrieve_image_data(proxy, data):
+    '''
+    get image data and create wx image from it so it can be easily processed
+    '''
     thumb = 'http://i.ytimg.com/vi/' + data[2] + '/default.jpg'
+
     try:
-        image = wx.ImageFromStream(FetchURL(proxy, thumb), type=wx.BITMAP_TYPE_JPEG)
+        image = wx.ImageFromStream(fetch_url(proxy, thumb), type=wx.BITMAP_TYPE_JPEG)
         return (image.GetWidth(), image.GetHeight(), image.GetData())
     except:
         return None
 
-def FetchURL(proxy, url):
+def fetch_url(proxy, url):
+    ''' get url data using proxy when necessary '''
     if proxy != ':':
         return urllib2.build_opener(urllib2.ProxyHandler({'http': proxy })).open(url)
     else:
@@ -679,7 +847,6 @@ def FetchURL(proxy, url):
 
 app = wx.App(False)
 app.SetAppName('youmgr')
-homePath = wx.StandardPaths.Get().GetUserDataDir()
 wnd = MainFrame()
 wnd.Show(True)
 wnd.Maximize()
